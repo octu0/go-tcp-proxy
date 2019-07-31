@@ -8,8 +8,9 @@ _GOOS      = darwin
 _GOARCH    = amd64
 
 deps:
-	go get github.com/comail/colog
 	go get gopkg.in/urfave/cli.v1
+	go get github.com/comail/colog
+	go get github.com/lestrrat-go/file-rotatelogs
 
 build:
 	go generate

@@ -2,7 +2,6 @@ package main
 
 import (
   "log"
-  "fmt"
   "net"
   "os"
   "regexp"
@@ -24,14 +23,26 @@ func AddCommand(cmd cli.Command){
 func action(c *cli.Context) error {
   localAddr  := c.String("local")
   remoteAddr := c.String("remote")
-  nagles     := c.Bool("no-nagles")
   unwrapTLS  := c.Bool("unwrap-tls")
   match      := c.String("match")
   replace    := c.String("replace")
 
-  outputHex  := c.Bool("hex")
-  debug      := c.Bool("debug")
-  verbose    := c.Bool("verbose")
+  config := proxy.Config{
+    LogDir:      c.String("log-dir"),
+    NoNagles:    c.Bool("no-nagles"),
+    OutputHex:   c.Bool("hex"),
+    DebugMode:   c.Bool("debug"),
+    VerboseMode: c.Bool("verbose"),
+  }
+  if config.DebugMode {
+    colog.SetMinLevel(colog.LDebug)
+    if config.VerboseMode {
+      colog.SetMinLevel(colog.LTrace)
+    }
+  }
+
+  logger := proxy.NewGeneralLogger(config)
+  colog.SetOutput(logger)
 
   log.Printf("info: starting up %s", proxy.UA)
 
@@ -56,9 +67,6 @@ func action(c *cli.Context) error {
   matcher := createMatcher(match)
   replacer := createReplacer(replace)
 
-  if verbose {
-    debug = true
-  }
   connid := uint64(0)
   for {
     conn, err := listener.AcceptTCP()
@@ -79,17 +87,10 @@ func action(c *cli.Context) error {
     p.Matcher = matcher
     p.Replacer = replacer
 
-    p.Nagles = nagles
-    p.OutputHex = outputHex
-    p.Log = proxy.ColorLogger{
-      Verbose:     debug,
-      VeryVerbose: verbose,
-      Prefix:      fmt.Sprintf("Connection #%03d ", connid),
-      Color:       false,
-    }
+    p.Nagles = config.NoNagles
+    p.OutputHex = config.OutputHex
 
     go p.Start()
-
   }
 
   return nil
@@ -159,6 +160,12 @@ func main(){
   app.Action   = action
   app.Commands = Commands
   app.Flags    = []cli.Flag{
+    cli.StringFlag{
+      Name: "log-dir",
+      Usage: "/path/to/log directory",
+      Value: "/tmp",
+      EnvVar: "TCPPROXY_LOG_DIR",
+    },
     cli.StringFlag{
       Name: "l, local",
       Usage: "local address",
