@@ -75,11 +75,11 @@ func (p *Proxy) Start(lconn net.Conn) {
   remoteAddr := rconn.RemoteAddr().String()
 
   startAt    := time.Now()
-  log.Printf("info: proxy %s to %s", clientAddr, remoteAddr)
+  log.Printf("info: start proxy %s to %s", clientAddr, remoteAddr)
 
   //bidirectional copy
-  go p.pipe(lconn, rconn, true)
-  go p.pipe(rconn, lconn, false)
+  go p.pipe(lconn, rconn, clientAddr, remoteAddr, true)
+  go p.pipe(rconn, lconn, clientAddr, remoteAddr, false)
 
   //wait for close...
   <-p.errChan
@@ -88,7 +88,7 @@ func (p *Proxy) Start(lconn net.Conn) {
   rxByte  := p.formatByte(p.receiveBytes)
   elapsed := time.Since(startAt).String()
   log.Printf(
-    "info: closed %s to %s (dur: %s tx: %s, rx: %s)",
+    "info: close proxy %s to %s (dur: %s tx: %s, rx: %s)",
     clientAddr,
     remoteAddr,
     elapsed,
@@ -117,7 +117,7 @@ func (p *Proxy) err(s string, err error) {
   p.hasError = true
 }
 
-func (p *Proxy) pipe(src, dst io.ReadWriter, islocal bool) {
+func (p *Proxy) pipe(src, dst io.ReadWriter, srcAddr, dstAddr string, islocal bool) {
   buff := make([]byte, 0xffff)
   for {
     n, err := src.Read(buff)
@@ -139,16 +139,16 @@ func (p *Proxy) pipe(src, dst io.ReadWriter, islocal bool) {
 
     if p.opts.debugMode {
       if islocal {
-        log.Printf("debug: >>> %d bytes sent", n)
+        log.Printf("debug: tx: %s to %s (%s)", srcAddr, dstAddr, p.formatByte(uint64(n)))
       } else {
-        log.Printf("debug: <<< %d bytes recieved", n)
+        log.Printf("debug: rx: %s to %s (%s)", dstAddr, srcAddr, p.formatByte(uint64(n)))
       }
     }
     if p.opts.verboseMode {
       if p.opts.outputHex {
-        log.Printf("trace: %x", b)
+        log.Printf("trace: data=%x", b)
       } else {
-        log.Printf("trace: %s", b)
+        log.Printf("trace: data=%s", b)
       }
     }
 
