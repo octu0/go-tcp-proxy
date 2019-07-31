@@ -15,12 +15,6 @@ import (
 )
 
 var (
-  matchid = uint64(0)
-  connid  = uint64(0)
-  logger  proxy.ColorLogger
-)
-
-var (
   Commands = make([]cli.Command, 0)
 )
 func AddCommand(cmd cli.Command){
@@ -65,6 +59,7 @@ func action(c *cli.Context) error {
   if verbose {
     debug = true
   }
+  connid := uint64(0)
   for {
     conn, err := listener.AcceptTCP()
     if err != nil {
@@ -75,7 +70,7 @@ func action(c *cli.Context) error {
 
     var p *proxy.Proxy
     if unwrapTLS {
-      logger.Info("Unwrapping TLS")
+      log.Printf("info: Unwrapping TLS enable")
       p = proxy.NewTLSUnwrapped(conn, laddr, raddr, remoteAddr)
     } else {
       p = proxy.New(conn, laddr, raddr)
@@ -106,16 +101,17 @@ func createMatcher(match string) func([]byte) {
   }
   re, err := regexp.Compile(match)
   if err != nil {
-    logger.Warn("Invalid match regex: %s", err)
+    log.Printf("warn: Invalid match regex(%s): %s", match, err.Error())
     return nil
   }
 
-  logger.Info("Matching %s", re.String())
+  log.Printf("info: matching %s", re.String())
+  matchid := uint64(0)
   return func(input []byte) {
     ms := re.FindAll(input, -1)
     for _, m := range ms {
       matchid++
-      logger.Info("Match #%d: %s", matchid, string(m))
+      log.Printf("info: Matched #%d: %s", matchid, string(m))
     }
   }
 }
@@ -127,19 +123,19 @@ func createReplacer(replace string) func([]byte) []byte {
   //split by / (TODO: allow slash escapes)
   parts := strings.Split(replace, "~")
   if len(parts) != 2 {
-    logger.Warn("Invalid replace option")
+    log.Printf("warn: Invalid replace option:'%s'", replace)
     return nil
   }
 
   re, err := regexp.Compile(string(parts[0]))
   if err != nil {
-    logger.Warn("Invalid replace regex: %s", err)
+    log.Printf("warn: Invalid replace regex(%s): %s", parts[0], err)
     return nil
   }
 
   repl := []byte(parts[1])
 
-  logger.Info("Replacing %s with %s", re.String(), repl)
+  log.Printf("info: replacing %s with %s", re.String(), repl)
   return func(input []byte) []byte {
     return re.ReplaceAll(input, repl)
   }
@@ -172,7 +168,7 @@ func main(){
     cli.StringFlag{
       Name: "r, remote",
       Usage: "remote(destination) address",
-      Value: "127.0.0.1:80",
+      Value: "127.0.0.1:8000",
       EnvVar: "TCPPROXY_REMOTEADDR",
     },
     cli.BoolFlag{
