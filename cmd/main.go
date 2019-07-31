@@ -71,14 +71,12 @@ func action(c *cli.Context) error {
   matcher := createMatcher(match)
   replacer := createReplacer(replace)
 
-  connid := uint64(0)
   for {
     conn, err := listener.AcceptTCP()
     if err != nil {
       log.Printf("warn: Failed to accept connection '%s'", err.Error())
       continue
     }
-    connid++
 
     p := proxy.New(
       laddr,
