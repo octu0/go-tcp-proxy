@@ -15,14 +15,15 @@ const(
   GigaByte  uint64 = MegaByte  * 1024
 )
 
-// Proxy - Manages a Proxy connection, piping data between local and remote.
 type Proxy struct {
+  startAt       time.Time
   sendBytes     uint64
   receiveBytes  uint64
   laddr         *net.TCPAddr
   raddr         *net.TCPAddr
-  hasError      bool
-  errChan       chan bool
+  closed        bool
+  closeChan     chan bool
+  monCloseChan  chan bool
   opts          *Options
 }
 
@@ -32,12 +33,14 @@ func New(laddr, raddr *net.TCPAddr, optsFunc ...OptionsFunc) *Proxy {
     f(opts)
   }
 
-  p         := new(Proxy)
-  p.laddr    = laddr
-  p.raddr    = raddr
-  p.hasError = false
-  p.errChan  = make(chan bool)
-  p.opts     = opts
+  p             := new(Proxy)
+  p.startAt      = time.Now()
+  p.laddr        = laddr
+  p.raddr        = raddr
+  p.closed       = false
+  p.closeChan    = make(chan bool)
+  p.monCloseChan = make(chan bool)
+  p.opts         = opts
   return p
 }
 
@@ -45,7 +48,6 @@ type setNoDelayer interface {
   SetNoDelay(bool) error
 }
 
-// Start - open connection to remote and start proxying data.
 func (p *Proxy) Start(lconn net.Conn) {
   defer lconn.Close()
 
@@ -74,28 +76,39 @@ func (p *Proxy) Start(lconn net.Conn) {
   clientAddr := lconn.RemoteAddr().String()
   remoteAddr := rconn.RemoteAddr().String()
 
-  startAt    := time.Now()
   log.Printf("info: start proxy %s to %s", clientAddr, remoteAddr)
 
-  //bidirectional copy
   go p.pipe(lconn, rconn, clientAddr, remoteAddr, true)
   go p.pipe(rconn, lconn, clientAddr, remoteAddr, false)
+  go p.monitor(clientAddr, remoteAddr)
 
-  //wait for close...
-  <-p.errChan
+  <-p.closeChan
 
+  log.Printf("info: close proxy %s to %s (%s)", clientAddr, remoteAddr, p.stat())
+}
+
+func (p *Proxy) monitor(srcAddr, dstAddr string) {
+  ticker  := time.NewTicker(30 * time.Second)
+  running := true
+  log.Printf("debug: monitor starting")
+  for running {
+    select {
+    case <-ticker.C:
+      log.Printf("debug: stat %s to %s (%s)", srcAddr, dstAddr, p.stat())
+    case <-p.monCloseChan:
+      running = false
+    }
+  }
+  ticker.Stop()
+}
+
+func (p *Proxy) stat() string {
   txByte  := p.formatByte(p.sendBytes)
   rxByte  := p.formatByte(p.receiveBytes)
-  elapsed := time.Since(startAt).String()
-  log.Printf(
-    "info: close proxy %s to %s (dur: %s tx: %s, rx: %s)",
-    clientAddr,
-    remoteAddr,
-    elapsed,
-    txByte,
-    rxByte,
-  )
+  elapsed := time.Since(p.startAt).String()
+  return fmt.Sprintf("dur: %s tx: %s rx: %s", elapsed, txByte, rxByte)
 }
+
 func (p *Proxy) formatByte(bytes uint64) string {
     if GigaByte < bytes {
     return fmt.Sprintf("%3.2f GB", float64(bytes) / float64(GigaByte))
@@ -106,15 +119,16 @@ func (p *Proxy) formatByte(bytes uint64) string {
   return fmt.Sprintf("%3.2f KB", float64(bytes) / float64(KilloByte))
 }
 
-func (p *Proxy) err(s string, err error) {
-  if p.hasError {
+func (p *Proxy) handleError(err error, s string) {
+  if p.closed {
     return
   }
   if err != io.EOF {
-    log.Printf(s, err.Error())
+    log.Printf(s)
   }
-  p.errChan <- true
-  p.hasError = true
+  p.closeChan <- true
+  p.monCloseChan <- true
+  p.closed = true
 }
 
 func (p *Proxy) pipe(src, dst io.ReadWriter, srcAddr, dstAddr string, islocal bool) {
@@ -122,17 +136,15 @@ func (p *Proxy) pipe(src, dst io.ReadWriter, srcAddr, dstAddr string, islocal bo
   for {
     n, err := src.Read(buff)
     if err != nil {
-      p.err("warn: Read failed '%s'", err)
+      p.handleError(err, fmt.Sprintf("warn: %s failed to read '%s'", srcAddr, err.Error()))
       return
     }
     b := buff[:n]
 
-    //execute match
     if p.opts.matcher != nil {
       p.opts.matcher(b)
     }
 
-    //execute replace
     if p.opts.replacer != nil {
       b = p.opts.replacer(b)
     }
@@ -152,12 +164,12 @@ func (p *Proxy) pipe(src, dst io.ReadWriter, srcAddr, dstAddr string, islocal bo
       }
     }
 
-    //write out result
     n, err = dst.Write(b)
     if err != nil {
-      p.err("warn: Write failed '%s'", err)
+      p.handleError(err, fmt.Sprintf("warn: %s failed to write '%s'", dstAddr, err.Error()))
       return
     }
+
     if islocal {
       p.sendBytes += uint64(n)
     } else {
