@@ -11,40 +11,28 @@ import (
 type Proxy struct {
   sentBytes     uint64
   receivedBytes uint64
-  laddr, raddr  *net.TCPAddr
-  lconn, rconn  io.ReadWriteCloser
-  erred         bool
-  errsig        chan bool
-  tlsUnwrapp    bool
-  tlsAddress    string
-
-  Matcher  func([]byte)
-  Replacer func([]byte) []byte
-
-  // Settings
-  Nagles    bool
-  OutputHex bool
+  lconn         io.ReadWriteCloser
+  rconn         io.ReadWriteCloser
+  laddr         *net.TCPAddr
+  raddr         *net.TCPAddr
+  hasError      bool
+  errChan       chan bool
+  opts          *Options
 }
 
-// New - Create a new Proxy instance. Takes over local connection passed in,
-// and closes it when finished.
-func New(lconn *net.TCPConn, laddr, raddr *net.TCPAddr) *Proxy {
-  return &Proxy{
-    lconn:  lconn,
-    laddr:  laddr,
-    raddr:  raddr,
-    erred:  false,
-    errsig: make(chan bool),
+func New(lconn io.ReadWriteCloser, laddr *net.TCPAddr, raddr *net.TCPAddr, optsFunc ...OptionsFunc) *Proxy {
+  opts := new(Options)
+  for _, f := range optsFunc {
+    f(opts)
   }
-}
 
-// NewTLSUnwrapped - Create a new Proxy instance with a remote TLS server for
-// which we want to unwrap the TLS to be able to connect without encryption
-// locally
-func NewTLSUnwrapped(lconn *net.TCPConn, laddr, raddr *net.TCPAddr, addr string) *Proxy {
-  p := New(lconn, laddr, raddr)
-  p.tlsUnwrapp = true
-  p.tlsAddress = addr
+  p := new(Proxy)
+  p.lconn    = lconn
+  p.laddr    = laddr
+  p.raddr    = raddr
+  p.hasError = false
+  p.errChan  = make(chan bool)
+  p.opts     = opts
   return p
 }
 
@@ -57,9 +45,8 @@ func (p *Proxy) Start() {
   defer p.lconn.Close()
 
   var err error
-  //connect to remote
-  if p.tlsUnwrapp {
-    p.rconn, err = tls.Dial("tcp", p.tlsAddress, nil)
+  if p.opts.tlsUnwrap {
+    p.rconn, err = tls.Dial("tcp", p.opts.tlsAddress, nil)
   } else {
     p.rconn, err = net.DialTCP("tcp", nil, p.raddr)
   }
@@ -70,7 +57,7 @@ func (p *Proxy) Start() {
   defer p.rconn.Close()
 
   //nagles?
-  if p.Nagles {
+  if p.opts.nagles {
     if conn, ok := p.lconn.(setNoDelayer); ok {
       conn.SetNoDelay(true)
     }
@@ -87,39 +74,24 @@ func (p *Proxy) Start() {
   go p.pipe(p.rconn, p.lconn)
 
   //wait for close...
-  <-p.errsig
+  <-p.errChan
   log.Printf("info: Closed (%d bytes sent, %d bytes recieved)", p.sentBytes, p.receivedBytes)
 }
 
 func (p *Proxy) err(s string, err error) {
-  if p.erred {
+  if p.hasError {
     return
   }
   if err != io.EOF {
     log.Printf(s, err.Error())
   }
-  p.errsig <- true
-  p.erred = true
+  p.errChan <- true
+  p.hasError = true
 }
 
 func (p *Proxy) pipe(src, dst io.ReadWriter) {
   islocal := src == p.lconn
 
-  var dataDirection string
-  if islocal {
-    dataDirection = "debug: >>> %d bytes sent"
-  } else {
-    dataDirection = "debug: <<< %d bytes recieved"
-  }
-
-  var byteFormat string
-  if p.OutputHex {
-    byteFormat = "trace: %x"
-  } else {
-    byteFormat = "trace: %s"
-  }
-
-  //directional copy (64k buffer)
   buff := make([]byte, 0xffff)
   for {
     n, err := src.Read(buff)
@@ -130,18 +102,29 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
     b := buff[:n]
 
     //execute match
-    if p.Matcher != nil {
-      p.Matcher(b)
+    if p.opts.matcher != nil {
+      p.opts.matcher(b)
     }
 
     //execute replace
-    if p.Replacer != nil {
-      b = p.Replacer(b)
+    if p.opts.replacer != nil {
+      b = p.opts.replacer(b)
     }
 
-    //show output
-    log.Printf(dataDirection, n)
-    log.Printf(byteFormat, b)
+    if p.opts.debugMode {
+      if islocal {
+        log.Printf("debug: >>> %d bytes sent", n)
+      } else {
+        log.Printf("debug: <<< %d bytes recieved", n)
+      }
+    }
+    if p.opts.verboseMode {
+      if p.opts.outputHex {
+        log.Printf("trace: %x", b)
+      } else {
+        log.Printf("trace: %s", b)
+      }
+    }
 
     //write out result
     n, err = dst.Write(b)

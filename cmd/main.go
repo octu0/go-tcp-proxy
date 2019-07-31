@@ -23,14 +23,15 @@ func AddCommand(cmd cli.Command){
 func action(c *cli.Context) error {
   localAddr  := c.String("local")
   remoteAddr := c.String("remote")
-  unwrapTLS  := c.Bool("unwrap-tls")
   match      := c.String("match")
   replace    := c.String("replace")
 
+  unwrapTLS  := c.Bool("unwrap-tls")
+  noNagles   := c.Bool("no-nagles")
+  outputHex  := c.Bool("hex")
+
   config := proxy.Config{
     LogDir:      c.String("log-dir"),
-    NoNagles:    c.Bool("no-nagles"),
-    OutputHex:   c.Bool("hex"),
     DebugMode:   c.Bool("debug"),
     VerboseMode: c.Bool("verbose"),
   }
@@ -63,6 +64,9 @@ func action(c *cli.Context) error {
   }
 
   log.Printf("info: Proxying from %s to %s", localAddr, remoteAddr)
+  if unwrapTLS {
+    log.Printf("info: Unwrapping TLS enable")
+  }
 
   matcher := createMatcher(match)
   replacer := createReplacer(replace)
@@ -76,20 +80,19 @@ func action(c *cli.Context) error {
     }
     connid++
 
-    var p *proxy.Proxy
-    if unwrapTLS {
-      log.Printf("info: Unwrapping TLS enable")
-      p = proxy.NewTLSUnwrapped(conn, laddr, raddr, remoteAddr)
-    } else {
-      p = proxy.New(conn, laddr, raddr)
-    }
-
-    p.Matcher = matcher
-    p.Replacer = replacer
-
-    p.Nagles = config.NoNagles
-    p.OutputHex = config.OutputHex
-
+    p := proxy.New(
+      conn,
+      laddr,
+      raddr,
+      proxy.TLSUnwrap(unwrapTLS),
+      proxy.TLSAddress(remoteAddr),
+      proxy.Matcher(matcher),
+      proxy.Replacer(replacer),
+      proxy.Nagles(noNagles),
+      proxy.OutputHex(outputHex),
+      proxy.DebugMode(config.DebugMode),
+      proxy.VerboseMode(config.VerboseMode),
+    )
     go p.Start()
   }
 
@@ -169,7 +172,7 @@ func main(){
     cli.StringFlag{
       Name: "l, local",
       Usage: "local address",
-      Value: ":9999",
+      Value: "[0.0.0.0]:9999",
       EnvVar: "TCPPROXY_LOCALADDR",
     },
     cli.StringFlag{
