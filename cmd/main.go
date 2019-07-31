@@ -63,7 +63,7 @@ func action(c *cli.Context) error {
     return err
   }
 
-  log.Printf("info: Proxying from %s to %s", localAddr, remoteAddr)
+  log.Printf("info: lisen %s proxy to %s", localAddr, remoteAddr)
   if unwrapTLS {
     log.Printf("info: Unwrapping TLS enable")
   }
@@ -81,7 +81,6 @@ func action(c *cli.Context) error {
     connid++
 
     p := proxy.New(
-      conn,
       laddr,
       raddr,
       proxy.TLSUnwrap(unwrapTLS),
@@ -93,7 +92,7 @@ func action(c *cli.Context) error {
       proxy.DebugMode(config.DebugMode),
       proxy.VerboseMode(config.VerboseMode),
     )
-    go p.Start()
+    go p.Start(conn)
   }
 
   return nil

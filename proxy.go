@@ -2,17 +2,23 @@ package proxy
 
 import (
   "log"
-  "crypto/tls"
+  "fmt"
+  "time"
   "io"
   "net"
+  "crypto/tls"
+)
+
+const(
+  KilloByte uint64 = 1024
+  MegaByte  uint64 = KilloByte * 1024
+  GigaByte  uint64 = MegaByte  * 1024
 )
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
 type Proxy struct {
-  sentBytes     uint64
-  receivedBytes uint64
-  lconn         io.ReadWriteCloser
-  rconn         io.ReadWriteCloser
+  sendBytes     uint64
+  receiveBytes  uint64
   laddr         *net.TCPAddr
   raddr         *net.TCPAddr
   hasError      bool
@@ -20,14 +26,13 @@ type Proxy struct {
   opts          *Options
 }
 
-func New(lconn io.ReadWriteCloser, laddr *net.TCPAddr, raddr *net.TCPAddr, optsFunc ...OptionsFunc) *Proxy {
+func New(laddr, raddr *net.TCPAddr, optsFunc ...OptionsFunc) *Proxy {
   opts := new(Options)
   for _, f := range optsFunc {
     f(opts)
   }
 
-  p := new(Proxy)
-  p.lconn    = lconn
+  p         := new(Proxy)
   p.laddr    = laddr
   p.raddr    = raddr
   p.hasError = false
@@ -41,41 +46,64 @@ type setNoDelayer interface {
 }
 
 // Start - open connection to remote and start proxying data.
-func (p *Proxy) Start() {
-  defer p.lconn.Close()
+func (p *Proxy) Start(lconn net.Conn) {
+  defer lconn.Close()
 
   var err error
+  var rconn net.Conn
   if p.opts.tlsUnwrap {
-    p.rconn, err = tls.Dial("tcp", p.opts.tlsAddress, nil)
+    rconn, err = tls.Dial("tcp", p.opts.tlsAddress, nil)
   } else {
-    p.rconn, err = net.DialTCP("tcp", nil, p.raddr)
+    rconn, err = net.DialTCP("tcp", nil, p.raddr)
   }
   if err != nil {
     log.Printf("warn: Remote connection failed: %s", err.Error())
     return
   }
-  defer p.rconn.Close()
+  defer rconn.Close()
 
-  //nagles?
   if p.opts.nagles {
-    if conn, ok := p.lconn.(setNoDelayer); ok {
+    if conn, ok := lconn.(setNoDelayer); ok {
       conn.SetNoDelay(true)
     }
-    if conn, ok := p.rconn.(setNoDelayer); ok {
+    if conn, ok := rconn.(setNoDelayer); ok {
       conn.SetNoDelay(true)
     }
   }
 
-  //display both ends
-  log.Printf("info: Opened %s >>> %s", p.laddr.String(), p.raddr.String())
+  clientAddr := lconn.RemoteAddr().String()
+  remoteAddr := rconn.RemoteAddr().String()
+
+  startAt    := time.Now()
+  log.Printf("info: proxy %s to %s", clientAddr, remoteAddr)
 
   //bidirectional copy
-  go p.pipe(p.lconn, p.rconn)
-  go p.pipe(p.rconn, p.lconn)
+  go p.pipe(lconn, rconn, true)
+  go p.pipe(rconn, lconn, false)
 
   //wait for close...
   <-p.errChan
-  log.Printf("info: Closed (%d bytes sent, %d bytes recieved)", p.sentBytes, p.receivedBytes)
+
+  txByte  := p.formatByte(p.sendBytes)
+  rxByte  := p.formatByte(p.receiveBytes)
+  elapsed := time.Since(startAt).String()
+  log.Printf(
+    "info: closed %s to %s (dur: %s tx: %s, rx: %s)",
+    clientAddr,
+    remoteAddr,
+    elapsed,
+    txByte,
+    rxByte,
+  )
+}
+func (p *Proxy) formatByte(bytes uint64) string {
+    if GigaByte < bytes {
+    return fmt.Sprintf("%3.2f GB", float64(bytes) / float64(GigaByte))
+  }
+  if MegaByte < bytes {
+    return fmt.Sprintf("%3.2f MB", float64(bytes) / float64(MegaByte))
+  }
+  return fmt.Sprintf("%3.2f KB", float64(bytes) / float64(KilloByte))
 }
 
 func (p *Proxy) err(s string, err error) {
@@ -89,9 +117,7 @@ func (p *Proxy) err(s string, err error) {
   p.hasError = true
 }
 
-func (p *Proxy) pipe(src, dst io.ReadWriter) {
-  islocal := src == p.lconn
-
+func (p *Proxy) pipe(src, dst io.ReadWriter, islocal bool) {
   buff := make([]byte, 0xffff)
   for {
     n, err := src.Read(buff)
@@ -133,9 +159,9 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
       return
     }
     if islocal {
-      p.sentBytes += uint64(n)
+      p.sendBytes += uint64(n)
     } else {
-      p.receivedBytes += uint64(n)
+      p.receiveBytes += uint64(n)
     }
   }
 }
