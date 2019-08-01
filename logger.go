@@ -67,3 +67,6 @@ func (l *GeneralLogger) Write(p []byte) (int, error) {
 func (l *GeneralLogger) Logger() *log.Logger {
   return l.cl
 }
+func (l *GeneralLogger) Rotate() {
+  l.r.Rotate()
+}

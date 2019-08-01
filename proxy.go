@@ -6,6 +6,7 @@ import (
   "time"
   "io"
   "net"
+  "context"
   "crypto/tls"
 )
 
@@ -48,7 +49,8 @@ type setNoDelayer interface {
   SetNoDelay(bool) error
 }
 
-func (p *Proxy) Start(lconn net.Conn) {
+func (p *Proxy) Start(ctx context.Context, cancel context.CancelFunc, lconn net.Conn) {
+  defer cancel()
   defer lconn.Close()
 
   var err error
@@ -82,9 +84,16 @@ func (p *Proxy) Start(lconn net.Conn) {
   go p.pipe(rconn, lconn, clientAddr, remoteAddr, false)
   go p.monitor(clientAddr, remoteAddr)
 
-  <-p.closeChan
-
-  log.Printf("info: close proxy %s to %s (%s)", clientAddr, remoteAddr, p.stat())
+  for {
+    select {
+    case <-p.closeChan:
+      log.Printf("info: close proxy %s to %s (%s)", clientAddr, remoteAddr, p.stat())
+      return
+    case <-ctx.Done():
+      log.Printf("info: stop event happen")
+      return
+    }
+  }
 }
 
 func (p *Proxy) monitor(srcAddr, dstAddr string) {

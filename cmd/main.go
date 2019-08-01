@@ -4,8 +4,11 @@ import (
   "log"
   "net"
   "os"
+  "os/signal"
+  "syscall"
   "regexp"
   "strings"
+  "context"
 
   "github.com/comail/colog"
   "gopkg.in/urfave/cli.v1"
@@ -71,27 +74,67 @@ func action(c *cli.Context) error {
   matcher := createMatcher(match)
   replacer := createReplacer(replace)
 
-  for {
-    conn, err := listener.AcceptTCP()
-    if err != nil {
-      log.Printf("warn: Failed to accept connection '%s'", err.Error())
-      continue
-    }
+  ctx    := context.Background()
+  sigCtx, sigCancel := context.WithCancel(ctx)
+  defer sigCancel()
 
-    p := proxy.New(
-      laddr,
-      raddr,
-      proxy.TLSUnwrap(unwrapTLS),
-      proxy.TLSAddress(remoteAddr),
-      proxy.Matcher(matcher),
-      proxy.Replacer(replacer),
-      proxy.Nagles(noNagles),
-      proxy.OutputHex(outputHex),
-      proxy.DebugMode(config.DebugMode),
-      proxy.VerboseMode(config.VerboseMode),
-    )
-    go p.Start(conn)
+  go func() {
+    signalChan := make(chan os.Signal, 10)
+    signal.Notify(signalChan, syscall.SIGTERM)
+    signal.Notify(signalChan, syscall.SIGHUP)
+    signal.Notify(signalChan, syscall.SIGINT)
+    for {
+      select {
+      case sig := <-signalChan:
+        log.Printf("info: signal trap(%s)", sig.String())
+        switch sig {
+        case syscall.SIGHUP:
+          log.Printf("info: SIGHUP occurred. rotate logs")
+          logger.Rotate()
+        case syscall.SIGTERM,syscall.SIGINT:
+          log.Printf("info: server shutting down")
+          sigCancel()
+        }
+      }
+    }
+  }()
+
+  running  := true
+  connChan := make(chan net.Conn)
+  go func(){
+    for running {
+      conn, err := listener.AcceptTCP()
+      if err != nil {
+        log.Printf("warn: Failed to accept connection '%s'", err.Error())
+        continue
+      }
+      connChan <- conn
+    }
+  }()
+
+  for running {
+    select {
+    case <-sigCtx.Done():
+      running = false
+    case conn := <-connChan:
+      ctx, cancel := context.WithCancel(sigCtx)
+
+      p := proxy.New(
+        laddr,
+        raddr,
+        proxy.TLSUnwrap(unwrapTLS),
+        proxy.TLSAddress(remoteAddr),
+        proxy.Matcher(matcher),
+        proxy.Replacer(replacer),
+        proxy.Nagles(noNagles),
+        proxy.OutputHex(outputHex),
+        proxy.DebugMode(config.DebugMode),
+        proxy.VerboseMode(config.VerboseMode),
+      )
+      go p.Start(ctx, cancel, conn)
+    }
   }
+  log.Printf("info: stop server %s", proxy.UA)
 
   return nil
 }
